@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apocalipse Web · pages over FM</title>
+<style>
+  :root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#111b1d;color:#e6f1e9}
+  *{box-sizing:border-box}body{max-width:1100px;margin:auto;padding:28px 20px 50px}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;border-bottom:1px solid #40534b;margin-bottom:28px}
+  h1{font-size:clamp(1.8rem,4vw,3rem);letter-spacing:-.04em;margin:0 0 12px}h2{font-size:1.2rem;margin:0 0 14px}
+  .tag{color:#9ed0b0;font-size:.85rem}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+  section{background:#1a2928;border:1px solid #36534b;border-radius:14px;padding:22px;margin-bottom:18px}
+  .wide{grid-column:1/-1}p{margin:0 0 14px;color:#bacdc3}label{display:block;margin:12px 0 5px}
+  button,.button{display:inline-block;border:1px solid #8ac7a0;border-radius:8px;padding:9px 14px;background:#b3e8bd;color:#10251c;font:inherit;font-weight:700;cursor:pointer;text-decoration:none;margin:5px 7px 5px 0}
+  button.secondary,.button.secondary{background:transparent;color:#d1ecda}button:disabled{opacity:.45;cursor:not-allowed}
+  input[type=file]{width:100%;padding:11px;border:1px dashed #7fae93;border-radius:8px;background:#10201f;color:#d8e9dd}
+  input[type=range]{vertical-align:middle;width:140px}small,.muted{color:#a7bdb0}output{display:block;white-space:pre-wrap;min-height:2em;color:#d4f0db;margin:10px 0}
+  progress{width:100%;height:15px;accent-color:#9ce1ab}iframe{width:100%;height:560px;border:1px solid #667e6d;border-radius:8px;background:white}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.meter{height:8px;background:#0c1717;border-radius:8px;overflow:hidden;width:110px}.meter span{display:block;height:100%;background:#a9e3ad;width:0}
+  code{color:#b9e5c1}@media(max-width:680px){.grid{grid-template-columns:1fr}.wide{grid-column:auto}body{padding:18px 12px}}
+</style>
+<header><h1>Apocalipse Web</h1><span class="tag">HTML over FM · AX.25 · 1200 baud</span></header>
+<main class="grid">
+  <section>
+    <h2>1 · Load a page</h2>
+    <p>Choose one HTML file or a ZIP with HTML, images and stylesheets. The site is sent unencrypted, one way.</p>
+    <input id="file" type="file" accept=".html,.htm,.zip,text/html,application/zip">
+    <output id="sourceStatus" aria-live="polite">No page selected.</output>
+    <div class="row"><button id="previewSource" class="secondary" disabled>Preview selected page</button></div>
+  </section>
+  <section>
+    <h2>2 · Transmit</h2>
+    <p>Connect your computer audio output to the transmitter input. Start with low volume and adjust until the received audio is clean.</p>
+    <label for="volume">Audio level <span id="volumeValue">45%</span></label>
+    <input id="volume" type="range" min="5" max="90" value="45">
+    <div class="row"><button id="transmit" disabled>Start repeating</button><button id="stopTransmit" class="secondary" disabled>Stop</button><button id="download" class="secondary" disabled>Download WAV (one pass)</button></div>
+    <output id="txStatus" aria-live="polite">Waiting for a page.</output>
+  </section>
+  <section>
+    <h2>3 · Receive</h2>
+    <p>Feed the FM receiver's speaker or line output into a microphone input. Allow microphone access when prompted; keep the receiver's squelch open.</p>
+    <div class="row"><button id="receive">Start microphone</button><button id="stopReceive" class="secondary" disabled>Stop</button><span class="meter" aria-label="Input level"><span id="level"></span></span></div>
+    <progress id="progress" max="1" value="0"></progress>
+    <output id="rxStatus" aria-live="polite">Waiting for audio.</output>
+  </section>
+  <section>
+    <h2>How to use it</h2>
+    <p>Send and receive on the same FM channel, with the radio set to ordinary voice audio. A full cycle repeats until stopped, so a late receiver or a missed packet can catch the next pass.</p>
+    <p>Pages and local files are limited to 256 KiB total. The preview blocks scripts and network resources. Transfers can take minutes at 1200 baud.</p>
+    <small>Works from this local HTML file in browsers that allow microphone access on <code>file://</code>. Chrome, Edge and Firefox generally treat local files as secure contexts; browser permission settings may still block access. WAV output needs no microphone permission.</small>
+  </section>
+  <section class="wide">
+    <h2>Preview</h2>
+    <div class="row"><span id="previewLabel" class="muted">No page to show.</span><button id="previewReceived" class="secondary" disabled>Show received page</button></div>
+    <iframe id="preview" title="Sandboxed page preview" sandbox="allow-same-origin"></iframe>
+  </section>
+</main>
+<script id="core">
+(function(global){
+  'use strict';
+  const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', {fatal:true});
+  const MAX_SITE = 256 * 1024, MAX_FILES = 256, CHUNK = 160;
+  function bytes(value){return value instanceof Uint8Array ? value : new Uint8Array(value);}
+  function concat(parts){let n=0;for(const p of parts)n+=p.length;const out=new Uint8Array(n);let i=0;for(const p of parts){out.set(p,i);i+=p.length;}return out;}
+  function u16(b,i){return b[i]|b[i+1]<<8;}
+  function u32(b,i){return (b[i]|b[i+1]<<8|b[i+2]<<16|b[i+3]<<24)>>>0;}
+  function put16(b,i,v){b[i]=v&255;b[i+1]=v>>>8&255;}
+  function put32(b,i,v){put16(b,i,v);put16(b,i+2,v>>>16);}
+  function crc32(data){let c=0xffffffff;for(const x of data){c^=x;for(let k=0;k<8;k++)c=(c>>>1)^(c&1?0xedb88320:0);}return(c^0xffffffff)>>>0;}
+  function fcs(data){let c=0xffff;for(const x of data){c^=x;for(let k=0;k<8;k++)c=(c>>>1)^(c&1?0x8408:0);}return(c^0xffff)&65535;}
+  function safePath(path){if(typeof path!=='string'||!path||path.includes('\\')||path.startsWith('/')||path.includes('\0')||/^[a-z]+:/i.test(path))return null;const p=path.split('/');if(p.some(s=>!s||s==='.'||s==='..'||/[\x00-\x1f]/.test(s)))return null;return path;}
+  function resolvePath(base,ref){if(!ref||/^[a-z][a-z0-9+.-]*:/i.test(ref)||ref.startsWith('//')||ref.startsWith('/')||ref.startsWith('#')||ref.includes('\\'))return null;let clean=ref.split(/[?#]/)[0];try{clean=decodeURIComponent(clean);}catch{return null;}if(!clean)return null;const parts=base.split('/').slice(0,-1);for(const s of clean.split('/')){if(s==='..'){if(!parts.length)return null;parts.pop();}else if(s&&s!=='.')parts.push(s);}return safePath(parts.join('/'));}
+  function importHtml(html,name='index.html'){const path=safePath(name);if(!path||!/\.html?$/i.test(path))throw Error('Choose an HTML file with a safe name.');const data=typeof html==='string'?encoder.encode(html):bytes(html);if(data.length>MAX_SITE)throw Error('Page exceeds 256 KiB.');return {entry:path,files:[{path,bytes:data}]};}
+  function inflateRaw(input,expected){
+    let pos=0,bit=0,out=new Uint8Array(expected),at=0;
+    function read(n){let v=0;for(let i=0;i<n;i++){if(pos>=input.length)throw Error('Truncated DEFLATE stream.');v|=((input[pos]>>>bit)&1)<<i;if(++bit===8){bit=0;pos++;}}return v;}
+    function table(lengths){const counts=new Uint16Array(16),next=new Uint16Array(16),map=new Map();for(const l of lengths)if(l)counts[l]++;let code=0;for(let n=1;n<=15;n++){code=(code+counts[n-1])<<1;next[n]=code;}for(let sym=0;sym<lengths.length;sym++){const n=lengths[sym];if(!n)continue;let c=next[n]++,rev=0;for(let j=0;j<n;j++){rev=rev<<1|(c&1);c>>>=1;}map.set(n*65536+rev,sym);}return map;}
+    function symbol(map){let c=0;for(let n=1;n<=15;n++){c|=read(1)<<(n-1);const s=map.get(n*65536+c);if(s!==undefined)return s;}throw Error('Invalid DEFLATE code.');}
+    const lenBase=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+    const lenExtra=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+    const distBase=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+    const distExtra=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+    let last=0;while(!last){last=read(1);const kind=read(2);if(kind===0){if(bit){bit=0;pos++;}const n=read(16),inv=read(16);if((n^inv)!==65535||at+n>expected)throw Error('Invalid ZIP block.');for(let i=0;i<n;i++)out[at++]=read(8);continue;}
+      if(kind===3)throw Error('Invalid DEFLATE block.');let lit,dist;
+      if(kind===1){lit=table(Array.from({length:288},(_,i)=>i<144?8:i<256?9:i<280?7:8));dist=table(Array(32).fill(5));}
+      else{const hlit=read(5)+257,hdist=read(5)+1,hclen=read(4)+4,order=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15],cl=Array(19).fill(0);for(let i=0;i<hclen;i++)cl[order[i]]=read(3);const ct=table(cl),all=[];while(all.length<hlit+hdist){const s=symbol(ct);if(s<16)all.push(s);else{const count=s===16?read(2)+3:s===17?read(3)+3:read(7)+11;const value=s===16?all[all.length-1]:0;if(value===undefined)throw Error('Invalid repeat code.');for(let i=0;i<count;i++)all.push(value);}}if(all.length!==hlit+hdist)throw Error('Invalid Huffman lengths.');lit=table(all.slice(0,hlit));dist=table(all.slice(hlit));}
+      for(;;){const s=symbol(lit);if(s<256){if(at>=expected)throw Error('ZIP file exceeds declared size.');out[at++]=s;}else if(s===256)break;else{const ix=s-257;if(ix<0||ix>=lenBase.length)throw Error('Invalid length code.');const n=lenBase[ix]+read(lenExtra[ix]),d=symbol(dist);if(d>=distBase.length)throw Error('Invalid distance code.');const back=distBase[d]+read(distExtra[d]);if(back>at||at+n>expected)throw Error('Invalid ZIP back reference.');for(let i=0;i<n;i++)out[at]=out[at++-back];}}
+    }if(at!==expected)throw Error('ZIP file size mismatch.');return out;
+  }
+  async function importZip(input){const b=bytes(input);if(b.length>MAX_SITE*2)throw Error('ZIP exceeds compressed size limit.');let end=-1;for(let i=b.length-22;i>=Math.max(0,b.length-65557);i--)if(u32(b,i)===0x06054b50){end=i;break;}if(end<0)throw Error('ZIP directory missing.');const count=u16(b,end+10),size=u32(b,end+12),start=u32(b,end+16);if(count>MAX_FILES||start+size>b.length)throw Error('ZIP directory is invalid or too large.');let p=start,total=0;const files=[];for(let i=0;i<count;i++){
+      if(u32(b,p)!==0x02014b50||p+46>b.length)throw Error('Invalid ZIP entry.');const flags=u16(b,p+8),method=u16(b,p+10),crc=u32(b,p+16),packed=u32(b,p+20),unpacked=u32(b,p+24),nl=u16(b,p+28),extra=u16(b,p+30),comment=u16(b,p+32),off=u32(b,p+42);if(p+46+nl+extra+comment>b.length)throw Error('Truncated ZIP directory.');const name=decoder.decode(b.subarray(p+46,p+46+nl));p+=46+nl+extra+comment;if(name.endsWith('/'))continue;
+      const path=safePath(name);if(!path)throw Error('Unsafe ZIP path: '+name);if(flags&1||![0,8].includes(method))throw Error('Unsupported encrypted or compressed ZIP entry.');if(unpacked>MAX_SITE||total+unpacked>MAX_SITE)throw Error('ZIP exceeds 256 KiB unpacked.');if(u32(b,off)!==0x04034b50||off+30>b.length)throw Error('Invalid ZIP local header.');const dataAt=off+30+u16(b,off+26)+u16(b,off+28);if(dataAt+packed>b.length)throw Error('Truncated ZIP data.');const data=method===0?b.slice(dataAt,dataAt+packed):inflateRaw(b.subarray(dataAt,dataAt+packed),unpacked);if(data.length!==unpacked||crc32(data)!==crc)throw Error('ZIP checksum mismatch.');files.push({path,bytes:data});total+=unpacked;
+    }if(!files.length)throw Error('ZIP has no files.');let prefix=files[0].path.split('/')[0]+'/';if(files.every(f=>f.path.startsWith(prefix)))for(const f of files)f.path=f.path.slice(prefix.length);if(new Set(files.map(f=>f.path)).size!==files.length)throw Error('Duplicate ZIP paths.');const pages=files.filter(f=>/\.html?$/i.test(f.path));if(!pages.length)throw Error('ZIP has no HTML page.');const entry=pages.find(f=>/^index\.html?$/i.test(f.path))?.path||pages.find(f=>/(^|\/)index\.html?$/i.test(f.path))?.path||pages[0].path;return {entry,files};
+  }
+  function packSite(site){if(!site||!safePath(site.entry)||!Array.isArray(site.files)||site.files.length<1||site.files.length>MAX_FILES)throw Error('Invalid site.');const names=new Set(),manifest=[],parts=[];let offset=0;for(const f of site.files){if(!safePath(f.path)||names.has(f.path))throw Error('Invalid or duplicate file path.');names.add(f.path);const data=bytes(f.bytes);manifest.push({path:f.path,size:data.length,offset,crc:crc32(data)});parts.push(data);offset+=data.length;}if(!names.has(site.entry))throw Error('Entry page is missing.');const m=encoder.encode(JSON.stringify({version:1,entry:site.entry,files:manifest}));if(m.length+offset+4>MAX_SITE)throw Error('Site exceeds 256 KiB including manifest.');const head=new Uint8Array(4);put32(head,0,m.length);return concat([head,m,...parts]);}
+  function unpackSite(b){b=bytes(b);if(b.length<4||b.length>MAX_SITE)throw Error('Invalid site size.');const n=u32(b,0);if(n>b.length-4||n>65536)throw Error('Invalid manifest size.');const m=JSON.parse(decoder.decode(b.subarray(4,4+n)));if(m.version!==1||!safePath(m.entry)||!Array.isArray(m.files)||m.files.length>MAX_FILES)throw Error('Invalid manifest.');const files=[],names=new Set(),body=b.subarray(4+n);for(const f of m.files){if(!safePath(f.path)||names.has(f.path)||!Number.isInteger(f.offset)||!Number.isInteger(f.size)||f.offset<0||f.size<0||f.offset+f.size>body.length)throw Error('Invalid file record.');names.add(f.path);const data=body.slice(f.offset,f.offset+f.size);if(crc32(data)!==f.crc)throw Error('File checksum mismatch.');files.push({path:f.path,bytes:data});}if(!names.has(m.entry))throw Error('Entry page missing.');return {entry:m.entry,files};}
+  function address(call,last){const out=new Uint8Array(7);for(let i=0;i<6;i++)out[i]=(call.padEnd(6,' ')[i].charCodeAt(0)<<1)&255;out[6]=0x60|(last?1:0);return out;}
+  const addr=concat([address('APOCAL',false),address('WEB',true)]);
+  function createFrame(payload){payload=bytes(payload);if(payload.length>256)throw Error('AX.25 payload too large.');const body=concat([addr,Uint8Array.of(3,0xf0),payload]),out=new Uint8Array(body.length+2);out.set(body);put16(out,body.length,fcs(body));return out;}
+  function parseFrame(frame){frame=bytes(frame);if(frame.length<18||frame.length>274||frame[14]!==3||frame[15]!==0xf0||!(frame[13]&1))return null;if(fcs(frame.subarray(0,-2))!==u16(frame,frame.length-2))return null;return frame.slice(16,-2);}
+  function rawBits(frame){const out=[];let ones=0;for(const byte of frame)for(let k=0;k<8;k++){const bit=byte>>k&1;out.push(bit);if(bit){if(++ones===5){out.push(0);ones=0;}}else ones=0;}return out;}
+  const flag=[0,1,1,1,1,1,1,0];
+  function frameBits(frame){const out=[];for(let i=0;i<12;i++)out.push(...flag);out.push(...rawBits(frame),...flag,...flag);return Uint8Array.from(out);}
+  function bitsToFrames(bits){const frames=[];let start=-1;for(let i=0;i<=bits.length-8;i++){let yes=true;for(let k=0;k<8;k++)if(bits[i+k]!==flag[k]){yes=false;break;}if(!yes)continue;if(start>=0&&i>start){const stuffed=bits.slice(start,i),data=[],out=[];let ones=0,bad=false;for(let j=0;j<stuffed.length;j++){const bit=stuffed[j];if(ones===5){if(bit!==0){bad=true;break;}ones=0;continue;}data.push(bit);ones=bit?ones+1:0;}if(!bad&&data.length%8===0&&data.length>=18*8&&data.length<=274*8){for(let j=0;j<data.length;j+=8){let v=0;for(let k=0;k<8;k++)v|=data[j+k]<<k;out.push(v);}const b=Uint8Array.from(out);if(parseFrame(b))frames.push(b);}}start=i+8;i+=7;}return frames;}
+  function makeTransfer(site,id){const packed=packSite(site),total=Math.ceil(packed.length/CHUNK);if(total>65535)throw Error('Too many chunks.');const frames=[];for(let i=0;i<total;i++){const part=packed.subarray(i*CHUNK,(i+1)*CHUNK),p=new Uint8Array(20+part.length);p.set(encoder.encode('APW1'));put32(p,4,id>>>0);put16(p,8,total);put16(p,10,i);put32(p,12,packed.length);put32(p,16,crc32(part));p.set(part,20);frames.push(createFrame(p));}return frames;}
+  class TransferReceiver{constructor(){this.sessions=new Map();this.site=null;this.active=null;this.completedId=null;}
+    acceptFrame(frame){const p=parseFrame(frame);if(!p||p.length<21||String.fromCharCode(...p.subarray(0,4))!=='APW1')return false;const id=u32(p,4),total=u16(p,8),index=u16(p,10),length=u32(p,12),part=p.subarray(20);if(!total||index>=total||length>MAX_SITE||total!==Math.ceil(length/CHUNK)||part.length!==Math.min(CHUNK,length-index*CHUNK)||crc32(part)!==u32(p,16))return false;let s=this.sessions.get(id);if(!s){s={total,length,chunks:new Array(total),received:0};this.sessions.set(id,s);if(this.sessions.size>3)this.sessions.delete(this.sessions.keys().next().value);}if(s.total!==total||s.length!==length)return false;this.active=id;if(!s.chunks[index]){s.chunks[index]=part.slice();s.received++;}if(s.received===total&&this.completedId!==id){try{this.site=unpackSite(concat(s.chunks));this.completedId=id;}catch(e){this.site=null;}}return true;}
+    progress(){const s=this.sessions.get(this.active);return {received:s?.received||0,total:s?.total||0,complete:!!this.site};}
+  }
+  function makeToneBits(frames){const out=[];for(const frame of frames)out.push(...frameBits(frame));return Uint8Array.from(out);}
+  class AudioEncoder{constructor(frames,rate,repeat=true){this.bits=makeToneBits(frames);this.rate=rate;this.repeat=repeat;this.bitIndex=0;this.bitTime=0;this.newBit=true;this.tone=1;this.phase=0;this.done=false;}
+    fill(out){for(let i=0;i<out.length;i++){if(this.done){out[i]=0;continue;}if(this.newBit){if(this.bits[this.bitIndex]===0)this.tone^=1;this.newBit=false;}out[i]=Math.sin(this.phase*2*Math.PI)*.75;this.phase+= (this.tone?1200:2200)/this.rate;this.phase-=Math.floor(this.phase);this.bitTime+=1200/this.rate;if(this.bitTime>=1){this.bitTime-=1;this.bitIndex++;this.newBit=true;if(this.bitIndex>=this.bits.length){if(this.repeat)this.bitIndex=0;else this.done=true;}}}return out;}
+    duration(){return this.bits.length/1200;}
+  }
+  function encodeAudio(frames,rate){const enc=new AudioEncoder(frames,rate,false),out=new Float32Array(Math.ceil(enc.duration()*rate)+2);enc.fill(out);return out;}
+  class AudioDecoder{constructor(rate,onFrame){this.rate=rate;this.onFrame=onFrame;this.bitSamples=rate/1200;this.phaseMark=0;this.phaseSpace=0;this.mi=0;this.mq=0;this.si=0;this.sq=0;this.alpha=1-Math.exp(-1/(rate/1200*.38));this.tone=null;this.clock=0;this.lastTone=1;this.bits=[];this.level=0;this.cooldown=0;}
+    feed(samples){let power=0;for(const x of samples){power+=x*x;const a=this.alpha;this.mi+=a*(x*Math.cos(this.phaseMark)-this.mi);this.mq+=a*(x*Math.sin(this.phaseMark)-this.mq);this.si+=a*(x*Math.cos(this.phaseSpace)-this.si);this.sq+=a*(x*Math.sin(this.phaseSpace)-this.sq);this.phaseMark+=2*Math.PI*1200/this.rate;this.phaseSpace+=2*Math.PI*2200/this.rate;if(this.phaseMark>2*Math.PI)this.phaseMark-=2*Math.PI;if(this.phaseSpace>2*Math.PI)this.phaseSpace-=2*Math.PI;const mark=this.mi*this.mi+this.mq*this.mq,space=this.si*this.si+this.sq*this.sq;const tone=mark>space?1:0;if(this.tone===null){this.tone=tone;this.lastTone=tone;}if(tone!==this.tone&&Math.abs(mark-space)>(mark+space)*.16){this.tone=tone;this.clock=this.bitSamples*.23;}
+      this.clock++;if(this.clock>=this.bitSamples){this.clock-=this.bitSamples;const bit=this.tone===this.lastTone?1:0;this.lastTone=this.tone;this.bits.push(bit);if(this.bits.length>5000)this.bits.splice(0,this.bits.length-3000);if(this.bits.length%8===0){const found=bitsToFrames(this.bits);for(const frame of found)this.onFrame(frame);if(found.length)this.bits=this.bits.slice(-64);}}
+    }this.level=Math.sqrt(power/samples.length);}
+  }
+  function decodeAudio(samples,rate){const found=[],seen=new Set(),d=new AudioDecoder(rate,f=>{const key=Array.from(f).join(',');if(!seen.has(key)){seen.add(key);found.push(f);}});for(let i=0;i<samples.length;i+=1024)d.feed(samples.subarray(i,i+1024));return found;}
+  function previewReferences(site,page){const file=site.files.find(f=>f.path===page);if(!file)return {};const html=decoder.decode(file.bytes),found={};for(const m of html.matchAll(/(?:src|href|poster)\s*=\s*["']([^"']+)["']/gi)){const p=resolvePath(page,m[1]);if(p&&site.files.some(f=>f.path===p))found[m[1]]=p;}return found;}
+  global.ApocalypseCore={MAX_SITE,crc32,fcs,safePath,resolvePath,importHtml,importZip,packSite,unpackSite,createFrame,parseFrame,frameBits,bitsToFrames,makeTransfer,TransferReceiver,AudioEncoder,AudioDecoder,encodeAudio,decodeAudio,previewReferences};
+})(globalThis);
+</script>
+<script>
+(function(){'use strict';
+  const c=ApocalypseCore,$=id=>document.getElementById(id),file=$('file'),sourceStatus=$('sourceStatus'),txStatus=$('txStatus'),rxStatus=$('rxStatus');
+  let source=null,received=null,frames=null,tx=null,rx=null,previewUrls=[];
+  function status(el,msg){el.textContent=msg;}
+  function seconds(s){return s<60?`${Math.ceil(s)} seconds`:`${Math.ceil(s/60)} minutes`;}
+  function updateSource(){const ready=!!source;$('transmit').disabled=!ready;$('download').disabled=!ready;$('previewSource').disabled=!ready;}
+  file.addEventListener('change',async()=>{source=null;frames=null;updateSource();const f=file.files[0];if(!f)return;try{status(sourceStatus,'Reading '+f.name+'…');const b=new Uint8Array(await f.arrayBuffer());source=/\.zip$/i.test(f.name)?await c.importZip(b):c.importHtml(b,f.name);frames=c.makeTransfer(source,crypto.getRandomValues(new Uint32Array(1))[0]);const sec=new c.AudioEncoder(frames,48000,false).duration();status(sourceStatus,`${source.files.length} file(s), ${b.length.toLocaleString()} input bytes · ${frames.length} packets · about ${seconds(sec)} per pass.`);updateSource();}catch(e){status(sourceStatus,e.message);}});
+  $('volume').addEventListener('input',()=>{$('volumeValue').textContent=$('volume').value+'%';if(tx)tx.gain.gain.value=Number($('volume').value)/100;});
+  function stopTx(){if(!tx)return;tx.node.disconnect();tx.gain.disconnect();tx.context.close();tx=null;$('transmit').disabled=!source;$('stopTransmit').disabled=true;status(txStatus,'Stopped.');}
+  $('transmit').addEventListener('click',async()=>{if(!frames)return;try{const context=new (window.AudioContext||window.webkitAudioContext)(),gain=context.createGain(),node=context.createScriptProcessor(4096,0,1),enc=new c.AudioEncoder(frames,context.sampleRate,true);let lastCycle=0;gain.gain.value=Number($('volume').value)/100;node.onaudioprocess=e=>{enc.fill(e.outputBuffer.getChannelData(0));const cycle=1+Math.floor(context.currentTime/enc.duration());if(cycle!==lastCycle){lastCycle=cycle;status(txStatus,'Repeating · cycle '+cycle);}};node.connect(gain).connect(context.destination);await context.resume();tx={context,gain,node};$('transmit').disabled=true;$('stopTransmit').disabled=false;status(txStatus,`Transmitting ${frames.length} AX.25 frames at 1200 baud.`);}catch(e){status(txStatus,e.message);}});
+  $('stopTransmit').addEventListener('click',stopTx);
+  $('download').addEventListener('click',()=>{if(!frames)return;const rate=12000,enc=new c.AudioEncoder(frames,rate,false),samples=Math.ceil(enc.duration()*rate);if(samples>rate*600){status(txStatus,'WAV exceeds 10 minutes. Use live repeating transmission.');return;}const wav=new ArrayBuffer(44+samples*2),view=new DataView(wav);function str(pos,s){for(let i=0;i<s.length;i++)view.setUint8(pos+i,s.charCodeAt(i));}str(0,'RIFF');view.setUint32(4,36+samples*2,true);str(8,'WAVEfmt ');view.setUint32(16,16,true);view.setUint16(20,1,true);view.setUint16(22,1,true);view.setUint32(24,rate,true);view.setUint32(28,rate*2,true);view.setUint16(32,2,true);view.setUint16(34,16,true);str(36,'data');view.setUint32(40,samples*2,true);const block=new Float32Array(4096);for(let at=0;at<samples;){enc.fill(block);for(let i=0;i<block.length&&at<samples;i++,at++)view.setInt16(44+at*2,Math.round(block[i]*Number($('volume').value)/100*32767),true);}const url=URL.createObjectURL(new Blob([wav],{type:'audio/wav'})),a=document.createElement('a');a.href=url;a.download='apocalipse-web.wav';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);status(txStatus,`Downloaded one ${seconds(enc.duration())} pass.`);});
+  function stopRx(){if(!rx)return;rx.stream.getTracks().forEach(t=>t.stop());rx.node.disconnect();rx.source.disconnect();rx.context.close();rx=null;$('receive').disabled=false;$('stopReceive').disabled=true;$('level').style.width='0';}
+  $('receive').addEventListener('click',async()=>{try{if(!navigator.mediaDevices?.getUserMedia)throw Error('This browser does not allow microphone access from this file. Try a current Chrome, Edge or Firefox, or check microphone permissions.');const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});const context=new (window.AudioContext||window.webkitAudioContext)(),source=context.createMediaStreamSource(stream),node=context.createScriptProcessor(4096,1,1),sink=context.createGain(),receiver=new c.TransferReceiver(),demod=new c.AudioDecoder(context.sampleRate,frame=>{if(receiver.acceptFrame(frame)){const p=receiver.progress();$('progress').max=p.total;$('progress').value=p.received;status(rxStatus,p.complete?`Complete: ${receiver.site.files.length} files received. Preview is ready.`:`Receiving ${p.received}/${p.total} packets. Keep listening for repeats.`);if(receiver.site){received=receiver.site;$('previewReceived').disabled=false;}}});received=null;$('previewReceived').disabled=true;$('progress').max=1;$('progress').value=0;sink.gain.value=0;node.onaudioprocess=e=>{demod.feed(e.inputBuffer.getChannelData(0));$('level').style.width=Math.min(100,demod.level*350)+'%';};source.connect(node).connect(sink).connect(context.destination);await context.resume();rx={stream,context,source,node};$('receive').disabled=true;$('stopReceive').disabled=false;status(rxStatus,'Listening for AX.25 frames…');}catch(e){status(rxStatus,e.message);}});
+  $('stopReceive').addEventListener('click',stopRx);
+  function mime(path){const ext=path.split('.').pop().toLowerCase();return {html:'text/html',htm:'text/html',css:'text/css',js:'text/javascript',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',svg:'image/svg+xml',webp:'image/webp',ico:'image/x-icon',woff:'font/woff',woff2:'font/woff2',ttf:'font/ttf',mp3:'audio/mpeg',wav:'audio/wav',mp4:'video/mp4'}[ext]||'application/octet-stream';}
+  function preview(site,page=site.entry){for(const u of previewUrls)URL.revokeObjectURL(u);previewUrls=[];const files=new Map(site.files.map(f=>[f.path,f]));if(!files.has(page))return;const urls=new Map();function asset(path,stack=[]){if(urls.has(path))return urls.get(path);if(stack.includes(path)||!files.has(path))return null;let b=files.get(path).bytes;if(/\.css$/i.test(path)){let css=new TextDecoder().decode(b);css=css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi,(all,q,ref)=>{if(/^data:/i.test(ref.trim()))return all;const p=c.resolvePath(path,ref.trim()),u=p?asset(p,[...stack,path]):null;return u?`url("${u}")`:'url("")';});css=css.replace(/@import\s+(?:url\()?\s*["']([^"']+\.css)["']\s*\)?/gi,(all,ref)=>{const p=c.resolvePath(path,ref),u=p?asset(p,[...stack,path]):null;return u?`@import url("${u}")`:'@import url("")';});b=new TextEncoder().encode(css);}const u=URL.createObjectURL(new Blob([b],{type:mime(path)}));urls.set(path,u);previewUrls.push(u);return u;}
+    const doc=new DOMParser().parseFromString(new TextDecoder().decode(files.get(page).bytes),'text/html');for(const el of doc.querySelectorAll('[src],[href],[poster],[srcset]')){for(const attr of ['src','href','poster'])if(el.hasAttribute(attr)){const value=el.getAttribute(attr),p=c.resolvePath(page,value);if(attr==='href'&&p&&/\.html?$/i.test(p)&&files.has(p)){el.setAttribute('href','#');el.dataset.localPage=p;}else if(p&&files.has(p))el.setAttribute(attr,asset(p));else if(!value.startsWith('#')&&!/^data:/i.test(value))el.removeAttribute(attr);}if(el.hasAttribute('srcset')){const value=el.getAttribute('srcset');const entries=value.split(',').map(item=>{const [ref,...rest]=item.trim().split(/\s+/),p=c.resolvePath(page,ref),u=p?asset(p):null;return u?u+' '+rest.join(' '):null;}).filter(Boolean);if(entries.length)el.setAttribute('srcset',entries.join(', '));else el.removeAttribute('srcset');}}for(const el of doc.querySelectorAll('style,[style]')){const css=el.tagName==='STYLE'?el.textContent:el.getAttribute('style');const changed=css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi,(all,q,ref)=>{if(/^data:/i.test(ref.trim()))return all;const p=c.resolvePath(page,ref.trim()),u=p?asset(p):null;return u?`url("${u}")`:'url("")';});if(el.tagName==='STYLE')el.textContent=changed;else el.setAttribute('style',changed);}const meta=doc.createElement('meta');meta.httpEquiv='Content-Security-Policy';meta.content="default-src 'none'; img-src blob: data:; style-src 'unsafe-inline' blob:; font-src blob: data:; media-src blob: data:;";doc.head.prepend(meta);for(const el of doc.querySelectorAll('script,iframe,object,embed,form,base,meta[http-equiv="refresh"]'))el.remove();const frame=$('preview');frame.srcdoc='<!doctype html>'+doc.documentElement.outerHTML;frame.onload=()=>{frame.contentDocument?.addEventListener('click',e=>{const a=e.target.closest?.('a');if(!a)return;if(a.dataset.localPage){e.preventDefault();preview(site,a.dataset.localPage);}else if(!a.getAttribute('href')?.startsWith('#'))e.preventDefault();});};$('previewLabel').textContent=page;}
+  $('previewSource').addEventListener('click',()=>{if(source)preview(source);});$('previewReceived').addEventListener('click',()=>{if(received)preview(received);});
+})();
+</script>
+</html>
