@@ -61,3 +61,16 @@ test('timing diagnostics detect a slow audio clock even without capture gaps or 
   assert.ok(events.some(e=>e.message.includes('67% of real time')));
   assert.ok(!events.some(e=>e.message.includes('Capture gap')||e.message.includes('behind capture')));
 });
+
+test('healthy microphone timing uses the concise status',async()=>{
+  let now=0,node;const events=[];
+  const capture=load({performance:{now:()=>now},AudioWorkletNode:class{constructor(){node=this;this.port={};}}});
+  const context={sampleRate:48000,currentTime:0,audioWorklet:{addModule:async()=>{}}};
+  await capture.create(context,()=>{},(level,message)=>events.push({level,message}));
+  for(let i=0;i<=120;i++){
+    now=i*4096/48;context.currentTime=(i+1)*4096/48000;
+    node.port.onmessage({data:{frame:i*4096,samples:new Float32Array(4096)}});
+  }
+  assert.ok(events.some(e=>e.level==='INFO'&&e.message==='Microphone capture check working'));
+  assert.ok(!events.some(e=>e.level==='WARNING'));
+});

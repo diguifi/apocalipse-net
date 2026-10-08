@@ -45,7 +45,8 @@
       if(!timing)timing={wall:now,audio:context.currentTime,samples:totalSamples};
       if(now-timing.wall>=10000){
         const wall=(now-timing.wall)/1000,audio=(totalSamples-timing.samples)/context.sampleRate,clock=context.currentTime-timing.audio;
-        onEvent('INFO',`Capture timing: ${wall.toFixed(1)}s wall / ${audio.toFixed(1)}s samples / ${clock.toFixed(1)}s audio clock.`);
+        if(audio/wall>=.9&&audio/wall<=1.1&&clock/wall>=.9&&clock/wall<=1.1)onEvent('INFO','Microphone capture check working');
+        if(audio/wall<.9||audio/wall>1.1)onEvent('WARNING',`Microphone capture is running at ${Math.round(audio/wall*100)}% of real time. Live audio may be lost or distorted.`);
         if(clock/wall<.9||clock/wall>1.1)onEvent('WARNING',`Audio clock is running at ${Math.round(clock/wall*100)}% of real time. Live microphone audio may be lost or distorted.`);
         timing={wall:now,audio:context.currentTime,samples:totalSamples};
       }

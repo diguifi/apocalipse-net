@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 function load() {
-  const html = fs.readFileSync('apocalipse.html', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
   const context = {TextEncoder,TextDecoder,Uint8Array,Float32Array,Float64Array,Uint32Array,
     ArrayBuffer,DataView,WebAssembly,atob,console,setTimeout,clearTimeout};
   for (const id of ['core','mt63-runtime','protocols']) {
@@ -16,12 +16,12 @@ function load() {
 }
 const {c,m,createMT63}=load();
 
-test('hello-fm.html reconstructs all eight MT63 packets at 48 kHz',async()=>{
-  const html=fs.readFileSync('hello-fm.html','utf8');
-  const frames=c.makeTransfer(c.importHtml(html,'hello-fm.html'),0x1d71d9d7);
-  assert.equal(frames.length,8);
+test('multi-packet HTML reconstructs over MT63 at 48 kHz',async()=>{
+  const html='<h1>MT63 round trip</h1>'+'Radio '.repeat(150);
+  const frames=c.makeTransfer(c.importHtml(html,'sample.html'),0x1d71d9d7);
+  assert.ok(frames.length>1);
   const receiver=await roundTrip('mt63',frames,48000);
-  assert.equal(receiver.progress().received,8);
+  assert.equal(receiver.progress().received,frames.length);
   assert.equal(new TextDecoder().decode(receiver.site.files[0].bytes),html);
 });
 
@@ -50,6 +50,24 @@ test('all protocols reconstruct a complete page', async () => {
     const receiver=await roundTrip(id,frames,id==='ax25'?48000:8000);
     assert.ok(receiver.site, id+' reconstructs site');
     assert.equal(new TextDecoder().decode(receiver.site.files[0].bytes),'<h1>Three modems</h1>');
+  }
+});
+
+test('all protocols carry exact new file bytes', async () => {
+  const bytes=Uint8Array.of(0x50,0x4b,0,255,1,2,3);
+  const frames=c.makeFileTransfer({name:'archive.zip',type:'application/zip',bytes},0x2468);
+  for(const id of Object.keys(m.PROTOCOLS)){
+    const rate=id==='ax25'?48000:8000;
+    const receiver=new c.EnhancedTransferReceiver();
+    const encoder=await m.createEncoder(id,frames,rate,false);
+    const decoder=await m.createDecoder(id,rate,frame=>receiver.acceptFrame(frame));
+    try{
+      const count=Math.ceil(encoder.duration()*rate);
+      for(let at=0;at<count;at+=1024){const block=new Float32Array(Math.min(1024,count-at));encoder.fill(block);decoder.feed(block);}
+      for(let i=0;i<Math.ceil(rate/1024);i++)decoder.feed(new Float32Array(1024));
+      assert.equal(receiver.file?.name,'archive.zip',id);
+      assert.deepEqual(Array.from(receiver.file.bytes),Array.from(bytes),id);
+    }finally{encoder.dispose?.();decoder.dispose?.();}
   }
 });
 

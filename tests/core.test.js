@@ -5,9 +5,7 @@ const vm = require('node:vm');
 const zlib = require('node:zlib');
 
 function core() {
-  const html = fs.readFileSync('apocalipse.html', 'utf8');
-  const code = html.match(/<script id="core">([\s\S]*?)<\/script>/)?.[1];
-  assert.ok(code, 'inline core script exists');
+  const code = fs.readFileSync('src/core.js', 'utf8');
   const context = { TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, DataView,
     Blob, DecompressionStream, URL, Math, Uint32Array, Float32Array, console };
   vm.runInNewContext(code, context);

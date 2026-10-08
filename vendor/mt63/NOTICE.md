@@ -1,26 +1,26 @@
 # MT63 modem provenance
 
 `mt63Wasm.js` and `mt63Wasm.wasm` are unmodified runtime files from
-`@hamstudy/mt63-wasm` **1.5.1** (npm tarball SHA-1
-`f06365244a0ddfaba1e9d8df18fe3b6971d81daa`).
+`@hamstudy/mt63-wasm` **1.5.0** (npm tarball SHA-1
+`96620031415ffb4de665e011ae7bc8a9362f3f7b`).
 
-WASM SHA-256: `be41cd6ca294678c1efafe71a9d3c9276ae70f1fd2c53531c3e3ce96ec71aa36`.
+WASM SHA-256: `34fc937d528349d6e5ed7c2b5d4ef001bb8a4aafa954db489733527bc69d3dc8`.
 
 - Project: https://github.com/taxilian/mt63_wasm
-- Package: https://www.npmjs.com/package/@hamstudy/mt63-wasm/v/1.5.1
+- Package: https://www.npmjs.com/package/@hamstudy/mt63-wasm/v/1.5.0
 - License: **GPL-3.0-or-later**, reproduced in `COPYING.txt`.
 - WebAssembly port: Richard Bateman / HamStudy.org.
 - MT63 implementation: Pawel Jalocha, SP9VRC, and Dave Freese, W1HKJ,
   derived from fldigi. Original notices are retained in the source archive.
 
-`upstream-source.tar.gz` contains the upstream source snapshot at `122e700`
-(June 4, 2021), including the modem, DSP routines, and build scripts. The npm
-release's metadata identifies git head `9c2b86c08988adb9f413b5e0899b47d05f8d8a3c`,
-which the upstream repository no longer serves; this archive is the available
-2021 source snapshot, not a claimed reproducible match of that unavailable commit.
+`upstream-source.tar.gz` contains the upstream source at the exact git head
+recorded in the 1.5.0 npm release metadata:
+`1752254f03f974114e6002fa4b02b92b657abb57` (June 1, 2021). It includes
+the modem, DSP routines, and build scripts. A byte-for-byte reproducible WASM
+build has not been independently verified.
 
 The runtime is embedded, without changing its modem implementation, into
-`apocalipse.html` by `scripts/embed-modems.cjs`. This preserves offline `file://`
+`index.html` by `scripts/embed-modems.cjs`. This preserves offline `file://`
 operation: loading the page never fetches WASM or JavaScript from a CDN.
 The application's adapter is maintained in `src/protocols.js`.
 
